@@ -82,6 +82,17 @@ def safe_encode(encoder, value, default_val=0):
     except Exception:
         return default_val
 
+# Live-weather labels from navigation_engine -> equivalents in the RTA training data.
+WEATHER_ALIASES = {"Clear": "Normal", "Rainy": "Raining", "Foggy": "Fog or mist"}
+ROAD_ALIASES = {"Wet": "Wet or damp"}
+
+def model_label(encoder, value, aliases):
+    """Returns the label the encoder was trained on for a live-telemetry value."""
+    classes = getattr(encoder, "classes_", [])
+    if value in classes:
+        return value
+    return aliases.get(value, value)
+
 def haversine_km(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(np.radians, (lat1, lon1, lat2, lon2))
     a = np.sin((lat2 - lat1) / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin((lon2 - lon1) / 2) ** 2
@@ -168,6 +179,8 @@ hazard = scan_hazards(current_loc[0], current_loc[1])
 
 # 6. Adaptive Model Feature Alignment
 # Supports both Kerala models and raw RTA/Kaggle models without schema collisions
+weather_label = model_label(encoders.get("Weather_Condition"), weather.get("Weather_Condition", "Clear"), WEATHER_ALIASES)
+road_label = model_label(encoders.get("Road_Condition"), weather.get("Road_Condition", "Dry"), ROAD_ALIASES)
 candidate_row = {
     "Vehicle_Speed": vehicle_speed,
     "Time_Hour": time_hour,
@@ -176,8 +189,8 @@ candidate_row = {
     "State": safe_encode(encoders.get("State"), "Kerala"),
     "Road_Type": safe_encode(encoders.get("Road_Type"), "National Highway"),
     "Traffic_Condition": safe_encode(encoders.get("Traffic_Condition"), "Medium"),
-    "Weather_Condition": safe_encode(encoders.get("Weather_Condition"), weather.get("Weather_Condition", "Clear")),
-    "Road_Condition": safe_encode(encoders.get("Road_Condition"), weather.get("Road_Condition", "Dry")),
+    "Weather_Condition": safe_encode(encoders.get("Weather_Condition"), weather_label),
+    "Road_Condition": safe_encode(encoders.get("Road_Condition"), road_label),
     "Vehicle_Type": safe_encode(encoders.get("Vehicle_Type"), vehicle_type),
     "Precipitation_mm": weather.get("Precipitation_mm", 0.0),
     "Wind_Speed_kmh": weather.get("Wind_Speed_kmh", 10.0)
@@ -300,8 +313,8 @@ with col_inputs:
     html(f"""<div class="card">{ui.inputs_grid([
         ("Time of day", f"{clock} · {day_phase.split(' ', 1)[-1]}"),
         ("Vehicle", ui.pretty_vehicle(vehicle_type)),
-        ("Weather", weather.get("Weather_Condition", "Clear")),
-        ("Road surface", weather.get("Road_Condition", "Dry")),
+        ("Weather", weather_label),
+        ("Road surface", road_label),
         ("Vehicles involved", num_vehicles),
         ("Position", f"{current_loc[0]:.4f}, {current_loc[1]:.4f}"),
     ])}<div class="footnote">Decision Tree classifier trained on historical road traffic accident records.
