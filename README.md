@@ -31,6 +31,9 @@ Road-Accident-Severity-Prediction-Assistant/
 ├── navigation_engine.py        # Routing, geocoding, weather integration, & hazard scanner
 ├── blackspots.py               # Geocoded accident blackspots database
 ├── train.py                    # Model training, validation, & serialization pipeline
+├── ml_data.py                  # Dataset loading, preprocessing & train/test split (shared)
+├── ml_eval.py                  # Confusion matrices & accuracy metrics, logged per run
+├── ui_components.py            # Styling & HTML building blocks for the dashboard
 ├── fetch_kerala_real_data.py   # Historical weather & accident data ingestion script
 ├── requirements.txt            # Project dependencies
 ├── .gitignore                  # Git ignore rules for virtual environments & cache
@@ -39,7 +42,9 @@ Road-Accident-Severity-Prediction-Assistant/
 └── models/
     ├── decision_tree_model.joblib # Serialized Decision Tree model
     ├── feature_columns.joblib     # Feature schema metadata
-    └── label_encoders.joblib      # Categorical encoders
+    ├── label_encoders.joblib      # Categorical encoders
+    ├── metrics.json               # Latest evaluation: confusion matrices, precision/recall/F1
+    └── metrics_history.csv        # One row per evaluation run, to track accuracy over time
 ```
 
 ---
@@ -90,6 +95,20 @@ Pre-trained models are already provided in the [`models/`](models/) directory. I
 ```bash
 python train.py
 ```
+
+### Tracking model accuracy
+
+Every training run is scored on a held-out 20% test split (plus 5-fold cross-validation) and recorded:
+
+- **Confusion matrices** (counts, % of actual, % of predicted), accuracy, balanced accuracy, macro F1, and per-class precision/recall/F1 are saved to `models/metrics.json` and shown in the app's **Model performance** section.
+- Each run appends a row to `models/metrics_history.csv`, which drives the **Accuracy over time** chart.
+
+To re-score the saved model without retraining:
+```bash
+python ml_eval.py
+```
+
+> Accuracy alone is misleading here: most records are "Minor", and the model is class-balanced to catch rarer, more severe outcomes. Read the per-class recall and the matrices alongside it.
 
 To fetch real historical Kerala weather & accident transit data:
 ```bash

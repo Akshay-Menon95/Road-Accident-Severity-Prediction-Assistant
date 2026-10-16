@@ -1,4 +1,6 @@
 # app.py
+import json
+import os
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
@@ -92,6 +94,19 @@ def model_label(encoder, value, aliases):
     if value in classes:
         return value
     return aliases.get(value, value)
+
+METRICS_PATH = "models/metrics.json"
+HISTORY_PATH = "models/metrics_history.csv"
+
+@st.cache_data(show_spinner=False)
+def load_metrics(mtime):
+    """Evaluation results written by train.py / ml_eval.py (mtime busts the cache after a retrain)."""
+    with open(METRICS_PATH) as f:
+        return json.load(f)
+
+@st.cache_data(show_spinner=False)
+def load_history(mtime):
+    return pd.read_csv(HISTORY_PATH)
 
 def haversine_km(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(np.radians, (lat1, lon1, lat2, lon2))
@@ -325,3 +340,75 @@ with col_inputs:
         ("Position", f"{current_loc[0]:.4f}, {current_loc[1]:.4f}"),
     ])}<div class="footnote">Decision Tree classifier trained on historical road traffic accident records.
     Weather is sampled live at the vehicle's current position.</div></div>""")
+
+# 10. Model Performance: confusion matrices & accuracy tracking
+html('<div style="height:14px"></div>')
+html(ui.panel_title("📊 Model performance", "Held-out test results · logged on every retrain"))
+
+if not os.path.exists(METRICS_PATH):
+    html(ui.note("No evaluation results yet. Run <b>python ml_eval.py</b> (or <b>python train.py</b>) to score the model "
+                 "and generate <b>models/metrics.json</b>."))
+else:
+    perf = load_metrics(os.path.getmtime(METRICS_PATH))
+    overall, labels, per_class = perf["overall"], perf["labels"], perf["per_class"]
+    fatal = per_class.get("Fatal", {})
+
+    p1, p2, p3, p4 = st.columns(4)
+    with p1:
+        html(ui.kpi("🎯 Accuracy", f"{overall['accuracy'] * 100:.1f}%",
+                    f"majority-class baseline {overall['majority_baseline'] * 100:.1f}%"))
+    with p2:
+        html(ui.kpi("⚖️ Balanced accuracy", f"{overall['balanced_accuracy'] * 100:.1f}%",
+                    "mean recall across classes", accent="#818CF8"))
+    with p3:
+        html(ui.kpi("🧪 Macro F1", f"{overall['macro_f1'] * 100:.1f}%",
+                    "precision/recall, classes weighted equally", accent="#38BDF8"))
+    with p4:
+        html(ui.kpi("🚨 Fatal recall", f"{fatal.get('recall', 0) * 100:.1f}%",
+                    f"precision {fatal.get('precision', 0) * 100:.1f}% · {fatal.get('support', 0)} fatal cases",
+                    accent="#EF4444"))
+    html('<div style="height:14px"></div>')
+
+    col_cm, col_stats = st.columns([1.3, 1], gap="large")
+    with col_cm:
+        mode = st.radio("Matrix view", ui.CM_MODES, horizontal=True, label_visibility="collapsed")
+        matrix_html = ui.confusion_matrix(labels, perf["confusion_matrix"], perf["confusion_matrix_recall"],
+                                          perf["confusion_matrix_precision"], mode)
+        html('<div class="card">' + matrix_html + '</div>')
+
+    with col_stats:
+        cv = perf["cross_validation"]
+        cv_acc = cv["accuracy"]
+        stats = (
+            ui.stat_line("Train accuracy", "{:.1f}%".format(overall["train_accuracy"] * 100))
+            + ui.stat_line("{}-fold CV accuracy".format(cv["folds"]),
+                           "{:.1f}% ± {:.1f}".format(cv_acc["mean"] * 100, cv_acc["std"] * 100))
+            + ui.stat_line("Cohen’s kappa", "{:.3f}".format(overall["cohen_kappa"]))
+            + ui.stat_line("Test cases", "{:,} of {:,}".format(perf["dataset"]["test"], perf["dataset"]["rows"]))
+        )
+        html('<div class="card">' + ui.per_class_table(labels, per_class) + stats + '</div>')
+
+    if overall["accuracy"] < overall["majority_baseline"]:
+        top_class = max(perf["dataset"]["test_class_counts"], key=perf["dataset"]["test_class_counts"].get)
+        html(ui.note(f"<b>Read accuracy with care.</b> {overall['majority_baseline'] * 100:.0f}% of test cases are "
+                     f"<b>{ui.esc(top_class)}</b>, so always predicting it would score higher than this model. "
+                     "The model is class-balanced to flag rarer, more severe outcomes, which trades overall accuracy "
+                     "for recall: check the matrix and per-class recall/precision rather than accuracy alone."))
+
+    html('<div style="height:10px"></div>')
+    html(ui.panel_title("📈 Accuracy over time", "One row per retrain"))
+    if os.path.exists(HISTORY_PATH):
+        history = load_history(os.path.getmtime(HISTORY_PATH))
+        if len(history) > 1:
+            trend = history[["accuracy", "balanced_accuracy", "macro_f1"]].copy()
+            trend.index = pd.RangeIndex(1, len(trend) + 1, name="Run #")
+            st.line_chart(trend, height=220)
+        else:
+            html(ui.note("Only one evaluation is logged so far. Retrain with <b>python train.py</b> after changing the "
+                         "model or data and the trend appears here."))
+        with st.expander("Evaluation log"):
+            st.dataframe(history.iloc[::-1], use_container_width=True, hide_index=True)
+    model_info = perf["model"]
+    html('<div class="footnote">Evaluated on {} · {} {} · scikit-learn {} · generated {}</div>'.format(
+        ui.esc(perf["evaluated_on"]), ui.esc(model_info["type"]), ui.esc(json.dumps(model_info["params"])),
+        ui.esc(model_info["sklearn_version"]), ui.esc(perf["generated_at"])))

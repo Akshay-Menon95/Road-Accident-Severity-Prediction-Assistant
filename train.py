@@ -1,74 +1,43 @@
 # train.py
 import os
+import sys
 import joblib
-import pandas as pd
-from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import classification_report, accuracy_score
+from sklearn.metrics import accuracy_score
+
+import ml_data
+import ml_eval
 
 os.makedirs("models", exist_ok=True)
 
 print("📡 Fetching real historical accident dataset from GitHub...")
-url = "https://raw.githubusercontent.com/avikumart/Road-Traffic-Severity-Classification-Project/main/RTA%20Dataset.csv"
-
 try:
-    df = pd.read_csv(url)
+    df = ml_data.load_raw()
     print(f"✅ Successfully loaded {len(df)} real accident records.")
 except Exception as e:
     print(f"Failed to fetch data: {e}")
-    exit()
+    sys.exit(1)
 
-# 1. Clean and Map Columns to our App's API
-df.rename(columns={
-    'Weather_conditions': 'Weather_Condition',
-    'Road_surface_conditions': 'Road_Condition',
-    'Type_of_vehicle': 'Vehicle_Type',
-    'Number_of_vehicles_involved': 'Number_of_Vehicles'
-}, inplace=True)
+# 1. Clean, map columns to our App's API, and encode categorical data
+X_raw, y_raw = ml_data.prepare(df)
+X, y_encoded, encoders = ml_data.encode(X_raw, y_raw)
 
-# Process Time into Hour format safely (Fixes the dateutil warning)
-df['Time_Hour'] = df['Time'].astype(str).str.split(':').str[0]
-df['Time_Hour'] = pd.to_numeric(df['Time_Hour'], errors='coerce').fillna(12).astype(int)
-
-# Map the target variable to our standard Severity labels
-severity_mapping = {
-    "Slight Injury": "Minor", 
-    "Serious Injury": "Serious", 
-    "Fatal injury": "Fatal"
-}
-df['Severity'] = df['Accident_severity'].map(severity_mapping)
-
-features = ['Time_Hour', 'Weather_Condition', 'Road_Condition', 'Vehicle_Type', 'Number_of_Vehicles']
-df.dropna(subset=features + ['Severity'], inplace=True)
-
-X = df[features].copy()
-y = df['Severity'].copy()
-
-# 2. Encode Categorical Data (Fixes the strict dtype error)
-encoders = {}
-for col in ['Weather_Condition', 'Road_Condition', 'Vehicle_Type']:
-    le = LabelEncoder()
-    # Direct assignment circumvents strict string dtype constraints
-    X[col] = le.fit_transform(X[col].astype(str))
-    encoders[col] = le
-
-target_le = LabelEncoder()
-y_encoded = target_le.fit_transform(y)
-encoders['Severity'] = target_le
-
-# 3. Train Model
-X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded)
+# 2. Train Model
+X_train, X_test, y_train, y_test = ml_data.split(X, y_encoded)
 
 clf = DecisionTreeClassifier(max_depth=6, class_weight="balanced", random_state=42)
 clf.fit(X_train, y_train)
 
-y_pred = clf.predict(X_test)
-acc = accuracy_score(y_test, y_pred)
+acc = accuracy_score(y_test, clf.predict(X_test))
 print(f"🎯 Model trained on REAL Data. Accuracy: {acc * 100:.2f}%")
 
-# 4. Save Artifacts
+# 3. Save Artifacts
 joblib.dump(clf, "models/decision_tree_model.joblib")
 joblib.dump(encoders, "models/label_encoders.joblib")
-joblib.dump(features, "models/feature_columns.joblib")
+joblib.dump(ml_data.FEATURES, "models/feature_columns.joblib")
 print("💾 Model artifacts saved to 'models/' folder.")
+
+# 4. Evaluate: confusion matrices + accuracy metrics, tracked across runs
+metrics, appended = ml_eval.evaluate_and_record(clf, encoders, X_train, y_train, X_test, y_test, X, y_encoded, "train.py")
+ml_eval.print_report(metrics)
+print(f"\n📊 Metrics saved to {ml_eval.METRICS_PATH}" + (f" and logged in {ml_eval.HISTORY_PATH}" if appended else " (history unchanged)"))

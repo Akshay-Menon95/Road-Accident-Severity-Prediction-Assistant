@@ -225,6 +225,36 @@ iframe[title="streamlit_folium.st_folium"] {
 .input-cell .v { font-size: 14px; font-weight: 600; color: var(--text); margin-top: 3px; }
 .footnote { font-size: 12px; color: var(--faint); margin-top: 10px; line-height: 1.5; }
 
+/* ---------- Model performance ---------- */
+.cm { display: grid; grid-template-columns: 92px repeat(var(--n), minmax(0, 1fr)); gap: 6px; align-items: stretch; }
+.cm-corner { font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; display: flex; align-items: flex-end; line-height: 1.3; }
+.cm-head { text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); padding-bottom: 4px; }
+.cm-rowlabel { display: flex; align-items: center; font-size: 12px; font-weight: 700; color: var(--muted); }
+.cm-cell {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+    padding: 14px 6px; border-radius: 12px; min-height: 74px;
+    background: color-mix(in srgb, var(--tone) calc(6% + var(--s) * 64%), rgba(15, 23, 42, 0.6));
+    border: 1px solid color-mix(in srgb, var(--tone) calc(10% + var(--s) * 40%), transparent);
+}
+.cm-cell b { font-family: 'JetBrains Mono', monospace; font-size: 17px; color: var(--text); }
+.cm-cell span { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.cm-cell.ok { --tone: var(--ok); }
+.cm-cell.bad { --tone: var(--danger); }
+.cm-legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 12px; }
+.cm-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.perf-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.perf-table th, .perf-table td { border-left: 0; border-right: 0; border-bottom: 0; background: transparent; }
+.perf-table th { text-align: right; font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; padding: 0 0 8px; }
+.perf-table th:first-child, .perf-table td:first-child { text-align: left; }
+.perf-table td { text-align: right; padding: 9px 0; border-top: 1px dashed var(--border); color: var(--text); font-family: 'JetBrains Mono', monospace; }
+.perf-table td:first-child { font-family: 'Inter', sans-serif; font-weight: 600; }
+.perf-table .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; }
+.note { padding: 12px 14px; border-radius: 14px; font-size: 13px; line-height: 1.5; color: var(--muted);
+    background: rgba(56, 189, 248, 0.07); border: 1px solid rgba(56, 189, 248, 0.25); border-left: 3px solid var(--info); }
+.note b { color: var(--text); }
+.stat-line { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 8px 0; border-top: 1px dashed var(--border); color: var(--muted); }
+.stat-line b { color: var(--text); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+
 /* ---------- Error / empty state ---------- */
 .state-card {
     max-width: 640px; margin: 40px auto; text-align: center; padding: 36px 28px; border-radius: 22px;
@@ -436,6 +466,50 @@ def inputs_grid(cells):
         for k, v in cells
     )
     return f'<div class="inputs-grid">{body}</div>'
+
+
+CM_MODES = ("Counts", "% of actual (recall)", "% of predicted (precision)")
+
+
+def confusion_matrix(labels, counts, recall, precision, mode):
+    """HTML confusion matrix. Rows = actual severity, columns = predicted; diagonal = correct."""
+    head = "".join(f'<div class="cm-head">{esc(l)}</div>' for l in labels)
+    rows = []
+    for i, actual in enumerate(labels):
+        cells = [f'<div class="cm-rowlabel">{esc(actual)}</div>']
+        for j in range(len(labels)):
+            n = f"{counts[i][j]:,}"
+            if mode == CM_MODES[1]:
+                primary, secondary, strength = f"{recall[i][j] * 100:.1f}%", f"{n} cases", recall[i][j]
+            elif mode == CM_MODES[2]:
+                primary, secondary, strength = f"{precision[i][j] * 100:.1f}%", f"{n} cases", precision[i][j]
+            else:
+                primary, secondary, strength = n, f"{recall[i][j] * 100:.0f}% of actual", recall[i][j]
+            tone = "ok" if i == j else "bad"
+            cells.append(f'<div class="cm-cell {tone}" style="--s:{strength:.3f}"><b>{primary}</b><span>{secondary}</span></div>')
+        rows.append("".join(cells))
+    return (f'<div class="cm" style="--n:{len(labels)}"><div class="cm-corner">Actual ↓<br>Predicted →</div>{head}{"".join(rows)}</div>'
+            '<div class="cm-legend"><span><i style="background:var(--ok)"></i>Correct (diagonal)</span>'
+            '<span><i style="background:var(--danger)"></i>Misclassified</span></div>')
+
+
+def per_class_table(labels, per_class):
+    rows = "".join(
+        f'<tr><td><span class="dot" style="background:{severity_color(lab)}"></span>{esc(lab)}</td>'
+        f'<td>{per_class[lab]["precision"] * 100:.1f}%</td><td>{per_class[lab]["recall"] * 100:.1f}%</td>'
+        f'<td>{per_class[lab]["f1"] * 100:.1f}%</td><td>{per_class[lab]["support"]:,}</td></tr>'
+        for lab in labels
+    )
+    return ('<table class="perf-table"><thead><tr><th>Class</th><th>Precision</th><th>Recall</th><th>F1</th><th>Cases</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table>')
+
+
+def stat_line(label, value):
+    return f'<div class="stat-line"><span>{esc(label)}</span><b>{esc(value)}</b></div>'
+
+
+def note(markup):
+    return f'<div class="note">{markup}</div>'
 
 
 def error_state(title, message):
