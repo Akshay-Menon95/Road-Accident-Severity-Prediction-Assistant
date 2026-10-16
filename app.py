@@ -235,7 +235,13 @@ with col_map:
     m.get_root().header.add_child(folium.Element(ui.MAP_CSS))
 
     # Multi-Layer Selection (Night, Street, Satellite, Terrain)
-    folium.TileLayer("CartoDB dark_matter", name="Night Navigation").add_to(m)
+    # CARTO's dark basemap now requires an API key, so use Esri's key-free dark canvas instead
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
+        name="Night Navigation",
+        max_zoom=16,
+    ).add_to(m)
     folium.TileLayer("OpenStreetMap", name="Standard Street View").add_to(m)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
