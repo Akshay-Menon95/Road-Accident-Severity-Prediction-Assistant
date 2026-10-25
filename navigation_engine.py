@@ -1,20 +1,49 @@
 # navigation_engine.py
 import requests
 import polyline
+import re
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 from blackspots import NATIONAL_BLACKSPOTS
 
 def geocode_location(place_name):
-    """Converts text place names into GPS coordinates across India."""
+    """Converts text place names or raw coordinate strings into GPS coordinates."""
+    place_str = str(place_name).strip()
+    
+    # 1. SMART EXTRACTION: Grabs coordinates if format is "Name (lat, lon)" from map clicks
+    paren_match = re.search(r"\(\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\s*\)", place_str)
+    if paren_match:
+        return (float(paren_match.group(1)), float(paren_match.group(2)))
+        
+    # 2. Extract coordinates if format is purely "lat, lon"
+    coord_match = re.match(r"^\s*(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)\s*$", place_str)
+    if coord_match:
+        return (float(coord_match.group(1)), float(coord_match.group(3)))
+
+    # 3. Standard text geocoding
     geolocator = Nominatim(user_agent="india_safety_navigator")
     try:
-        location = geolocator.geocode(f"{place_name}, India")
+        location = geolocator.geocode(f"{place_str}, India")
         if location:
             return (location.latitude, location.longitude)
     except Exception as e:
         print(f"Geocoding error: {e}")
     return None
+
+def reverse_geocode(lat, lon):
+    """Converts map click coordinates into a readable place name."""
+    geolocator = Nominatim(user_agent="india_safety_navigator")
+    try:
+        loc = geolocator.reverse((lat, lon), exactly_one=True, timeout=5)
+        if loc:
+            addr = loc.raw.get('address', {})
+            name = addr.get('city', addr.get('town', addr.get('village', addr.get('suburb', addr.get('county', '')))))
+            if name:
+                return f"{name} ({lat:.5f}, {lon:.5f})"
+            return loc.address.split(',')[0]
+    except Exception:
+        pass
+    return f"{lat:.5f}, {lon:.5f}"
 
 def get_live_weather(lat, lon):
     """Fetches real-time weather from Open-Meteo."""
