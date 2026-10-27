@@ -5,7 +5,7 @@ from streamlit_folium import st_folium
 import numpy as np
 from navigation_engine import (get_driving_route, get_live_weather, scan_hazards, scan_route_hazards,
                                route_cumulative_km, generate_advisory, geocode_location, reverse_geocode)
-from label_maps import VEHICLE_GROUPS, light_for_hour
+from label_maps import DRIVER_AGE_BANDS, VEHICLE_GROUPS, light_for_hour
 from risk_model import load_artifacts, predict_severity
 import ui_components as ui
 
@@ -91,6 +91,8 @@ with st.sidebar:
 
     vehicle_speed = st.slider("Current speed (km/h)", min_value=10, max_value=160, value=65,
                               help="Drives the driving advisories only. The crash dataset has no speed field, so speed does not feed the severity model.")
+    age_choices = [a for a in DRIVER_AGE_BANDS if a in set(encoders["Driver_Age"].classes_)]
+    driver_age = st.selectbox("Driver age", age_choices, index=age_choices.index("31-50") if "31-50" in age_choices else 0)
     time_hour = st.slider("Time of day (hour)", 0, 23, 14)
     num_vehicles = st.slider("Vehicles involved in potential crash", 1, 6, 2)
 
@@ -157,6 +159,7 @@ try:
         "Road_Condition": weather["Road_Condition"],
         "Vehicle_Type": vehicle_type,
         "Light_Condition": light_for_hour(time_hour),
+        "Driver_Age": driver_age,
     })
 except (KeyError, ValueError) as e:
     html(ui.error_state("Model input mismatch", str(e)))

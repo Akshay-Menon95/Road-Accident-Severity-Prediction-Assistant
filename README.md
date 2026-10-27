@@ -97,7 +97,7 @@ Pre-trained models are already provided in the [`models/`](models/) directory. I
 python train.py
 ```
 
-`train.py` maps the raw dataset onto the shared labels in `label_maps.py` and makes an ~80/20 split **grouped by crash** (the file has one row per vehicle/casualty, so rows of one crash share a timestamp and weekday; a plain random split lets the model see a crash in training and be tested on it). It tunes the forest's leaf size and a class-prior correction (`severity_model.py`) by 5-fold crash-grouped cross-validation on the mean of macro-F1 and balanced accuracy, and writes the held-out results to `models/metrics.json`.
+`train.py` maps the raw dataset onto the shared labels in `label_maps.py` and makes an ~80/20 split **grouped by crash** (the file has one row per vehicle/casualty, so rows of one crash share a timestamp and weekday; a plain random split lets the model see a crash in training and be tested on it). It tunes the forest's leaf size and a class-prior correction (`severity_model.py`) by 5-fold crash-grouped cross-validation, choosing the highest accuracy within 0.01 macro-F1 of the best, and writes the held-out results to `models/metrics.json`.
 
 Run the tests with:
 ```bash
@@ -111,18 +111,18 @@ pytest
 
 Evaluated on a crash-grouped, stratified held-out set of 2,274 rows from the RTA dataset (11,366 usable rows, ~2,700 distinct crashes). Both columns are measured on the same held-out crashes:
 
-| Metric | Previous model (decision tree, 5 features) | Current model (random forest, + lighting, prior-corrected) |
+| Metric | Previous model (decision tree, 5 features) | Current model (random forest, + lighting & driver age, accuracy-tuned) |
 |---|---|---|
-| Accuracy | 53.3% | **74.8%** |
-| Balanced accuracy | 47.2% | 46.2% |
-| Macro F1 | 0.338 | **0.418** |
-| Fatal / Serious / Minor recall | 55% / 29% / 57% | 24% / 32% / 83% |
+| Accuracy | 53.3% | **80.1%** |
+| Balanced accuracy | 47.2% | 39.1% |
+| Macro F1 | 0.338 | **0.392** |
+| Fatal / Serious / Minor recall | 55% / 29% / 57% | 0% / 27% / 90% |
 
 Please read these numbers carefully:
 
-- **Accuracy is a trade-off, not a goal.** 84% of crashes are "Minor", so always predicting "Minor" scores 84% accuracy but is useless for road safety. The model's threshold is tuned so it still flags Serious and Fatal crashes; moving it towards "Minor" raises accuracy (up to ~83%) but Fatal recall falls towards zero. The current setting roughly keeps balanced accuracy while lifting raw accuracy by ~21 points. Fatal precision is only 6% because about 1% of crashes are fatal, and only ~29 fatal rows are in the test set, so Fatal figures are noisy.
+- **This model is tuned for accuracy, and it no longer flags Fatal crashes.** 84% of crashes are "Minor", so always predicting "Minor" scores 84%. `train.py` picks the highest-accuracy setting whose macro-F1 stays within 0.01 of the best, which gives 80.1% accuracy and ~27% Serious recall, but **0% Fatal recall** on the held-out set (only ~29 fatal rows, so that figure is noisy but the direction is real). An earlier, safety-first setting reached 74.8% accuracy with 24% Fatal recall; lower `F1_TOLERANCE`/change the tuning rule in `train.py` to get that back.
 - **The signal is weak.** Hour, lighting, weather, road surface, vehicle type and vehicle count explain little about severity. Treat the output as a relative risk indicator, not a calibrated probability or a prediction for a specific trip.
-- **Why not more features?** Day of week, driver age and experience looked like big wins under a random split (~78% accuracy, macro-F1 0.47) but nearly all of that gain disappeared once crashes were grouped, i.e. it was the model recognising crashes it had already seen. Only lighting (derived from the hour in the dashboard) gave a gain that survived.
+- **Why not more features?** Day of week, driver age and experience looked like big wins under a random split (~78% accuracy, macro-F1 0.47) but nearly all of that gain disappeared once crashes were grouped, i.e. it was the model recognising crashes it had already seen. Only lighting (derived from the hour in the dashboard) and driver age (a dashboard input) gave small gains that survived; the threshold-free signal (macro one-vs-rest AUC) is only ~0.61, which is why accuracy beyond ~80% would just mean predicting "Minor" almost every time.
 - **Different country.** The data comes from Addis Ababa, Ethiopia, while the navigation and blackspots cover India.
 - **Earlier versions reported ~90% accuracy** because vehicle speed was synthesised from the severity label itself (target leakage). That feature has been removed.
 

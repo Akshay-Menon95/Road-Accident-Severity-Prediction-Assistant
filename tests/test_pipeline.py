@@ -77,6 +77,7 @@ def test_live_labels_are_known_to_the_encoders(artifacts):
     assert set(label_maps.VEHICLE_GROUPS) <= set(encoders["Vehicle_Type"].classes_)
     light = set(encoders["Light_Condition"].classes_)
     assert {label_maps.light_for_hour(h) for h in range(24)} <= light
+    assert set(label_maps.DRIVER_AGE_BANDS) == set(encoders["Driver_Age"].classes_)
 
 
 def test_predict_severity_for_every_vehicle(artifacts):
@@ -85,7 +86,7 @@ def test_predict_severity_for_every_vehicle(artifacts):
         severity, probs = risk_model.predict_severity(model, encoders, features, {
             "Time_Hour": 23, "Number_of_Vehicles": 2, "Weather_Condition": "Raining",
             "Road_Condition": "Wet or damp", "Vehicle_Type": vehicle,
-            "Light_Condition": "Darkness - lights lit"})
+            "Light_Condition": "Darkness - lights lit", "Driver_Age": "31-50"})
         assert severity in {"Minor", "Serious", "Fatal"}
         assert sum(probs.values()) == pytest.approx(1.0)
 
@@ -94,12 +95,13 @@ def test_inputs_actually_reach_the_model(artifacts):
     model, encoders, features = artifacts
     base = {"Time_Hour": 14, "Number_of_Vehicles": 2, "Weather_Condition": "Normal",
             "Road_Condition": "Dry", "Vehicle_Type": "Car / Taxi",
-            "Light_Condition": "Daylight"}
+            "Light_Condition": "Daylight", "Driver_Age": "31-50"}
     _, p0 = risk_model.predict_severity(model, encoders, features, base)
     changed = [
         {**base, "Road_Condition": "Wet or damp"}, {**base, "Weather_Condition": "Raining"},
         {**base, "Vehicle_Type": "Motorcycle / Scooter"}, {**base, "Number_of_Vehicles": 5},
         {**base, "Time_Hour": 2}, {**base, "Light_Condition": "Darkness - lights lit"},
+        {**base, "Driver_Age": "Under 18"},
     ]
     assert any(risk_model.predict_severity(model, encoders, features, c)[1] != p0 for c in changed)
 
@@ -108,7 +110,7 @@ def test_unknown_label_and_missing_input_are_rejected(artifacts):
     model, encoders, features = artifacts
     base = {"Time_Hour": 14, "Number_of_Vehicles": 2, "Weather_Condition": "Normal",
             "Road_Condition": "Dry", "Vehicle_Type": "Car / Taxi",
-            "Light_Condition": "Daylight"}
+            "Light_Condition": "Daylight", "Driver_Age": "31-50"}
     with pytest.raises(ValueError):
         risk_model.predict_severity(model, encoders, features, {**base, "Weather_Condition": "Rainy"})
     with pytest.raises(KeyError):
@@ -148,7 +150,7 @@ def test_held_out_metrics_beat_the_old_pipeline():
     import json
     metrics = json.loads((ROOT / "models" / "metrics.json").read_text())
     assert "crash-grouped" in metrics["split"]
-    assert metrics["accuracy"] > 0.60 and metrics["macro_f1"] > 0.36
+    assert metrics["accuracy"] > 0.75 and metrics["macro_f1"] > 0.36
 
 
 # --- navigation engine -----------------------------------------------------------------

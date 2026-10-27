@@ -23,8 +23,8 @@ SEED = 42
 # Only features that exist in the dataset AND can be known at prediction time.
 # Vehicle speed is deliberately absent: the dataset has no speed column.
 FEATURES = ['Time_Hour', 'Weather_Condition', 'Road_Condition', 'Vehicle_Type',
-            'Number_of_Vehicles', 'Light_Condition']
-CATEGORICAL = ['Weather_Condition', 'Road_Condition', 'Vehicle_Type', 'Light_Condition']
+            'Number_of_Vehicles', 'Light_Condition', 'Driver_Age']
+CATEGORICAL = ['Weather_Condition', 'Road_Condition', 'Vehicle_Type', 'Light_Condition', 'Driver_Age']
 SEVERITY_MAP = {"Slight Injury": "Minor", "Serious Injury": "Serious", "Fatal injury": "Fatal"}
 
 FOREST_TREES = 300
@@ -55,12 +55,14 @@ def prepare_dataset(raw):
         'Road_surface_conditions': 'Road_Condition',
         'Number_of_vehicles_involved': 'Number_of_Vehicles',
         'Light_conditions': 'Light_Condition',
+        'Age_band_of_driver': 'Driver_Age',
     })
     df['Time_Hour'] = pd.to_numeric(df['Time'].astype(str).str.split(':').str[0], errors='coerce')
     df['Severity'] = df['Accident_severity'].map(SEVERITY_MAP)
     df['Vehicle_Type'] = df['Type_of_vehicle'].map(map_vehicle)
     # The file has one row per vehicle/casualty, so rows of one crash share a timestamp
     # and weekday. Rows with the same group must never straddle the train/test split.
+    df['Driver_Age'] = df['Driver_Age'].fillna('Unknown').astype(str).str.strip()
     df['Crash_Group'] = df['Time'].astype(str) + '|' + df['Day_of_week'].astype(str)
 
     before = len(df)
@@ -89,23 +91,25 @@ def out_of_fold_probabilities(X, y, groups, leaf):
     return proba
 
 
-def tuning_score(y, pred):
-    """Macro-F1 balances precision and recall per class, balanced accuracy rewards flagging
-    the rare Fatal/Serious classes; averaging them avoids settings that never flag Fatal."""
-    return 0.5 * (f1_score(y, pred, average='macro') + balanced_accuracy_score(y, pred))
+F1_TOLERANCE = 0.01
 
 
 def tune(X, y, groups, priors):
-    """Picks forest leaf size and prior-correction exponent by crash-grouped CV."""
-    best = None
+    """Picks forest leaf size and prior-correction exponent by crash-grouped CV.
+
+    Chooses the setting with the highest accuracy among those whose macro-F1 is within
+    F1_TOLERANCE of the best, so accuracy is raised without collapsing into "always Minor".
+    """
+    candidates = []
     for leaf in LEAF_GRID:
         proba = out_of_fold_probabilities(X, y, groups, leaf)
         for exponent in EXPONENT_GRID:
             pred = (proba / priors ** exponent).argmax(axis=1)
-            score = tuning_score(y, pred)
-            if best is None or score > best['score']:
-                best = {'score': float(score), 'leaf': leaf, 'exponent': float(exponent)}
-    return best
+            candidates.append({'leaf': leaf, 'exponent': float(exponent),
+                               'accuracy': float(accuracy_score(y, pred)),
+                               'macro_f1': float(f1_score(y, pred, average='macro'))})
+    floor = max(c['macro_f1'] for c in candidates) - F1_TOLERANCE
+    return max((c for c in candidates if c['macro_f1'] >= floor), key=lambda c: c['accuracy'])
 
 
 def evaluate(clf, X_test, y_test, labels):
@@ -144,7 +148,7 @@ def main():
     assert not set(groups[train_idx]) & set(groups[test_idx]), "crash rows leaked across the split"
 
     # Plain accuracy is won by always predicting "Minor" (~84%), so the decision point is
-    # tuned on out-of-fold predictions instead of being left at argmax.
+    # tuned on out-of-fold predictions (highest accuracy within a small macro-F1 margin of the best).
     priors = np.bincount(y_train) / len(y_train)
     best = tune(X_train, y_train, groups[train_idx], priors)
     forest = make_forest(best['leaf']).fit(X_train, y_train)
@@ -158,7 +162,8 @@ def main():
         "test_rows": int(len(X_test)),
         "split": "crash-grouped (no crash appears in both train and test)",
         "best_params": {"min_samples_leaf": best['leaf'], "prior_exponent": best['exponent']},
-        "cv_tuning_score_on_train": best['score'],
+        "cv_accuracy_on_train": best['accuracy'],
+        "cv_macro_f1_on_train": best['macro_f1'],
     })
 
     print(f"Best params: leaf={best['leaf']}, prior exponent={best['exponent']}")

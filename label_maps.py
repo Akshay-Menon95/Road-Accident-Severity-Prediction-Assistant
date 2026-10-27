@@ -103,6 +103,10 @@ def classify_weather(weather_code, precipitation_mm, wind_kmh):
     return WEATHER_NORMAL, ROAD_DRY
 
 
+# --- Driver age ------------------------------------------------------------------------
+DRIVER_AGE_BANDS = ["Under 18", "18-30", "31-50", "Over 51", "Unknown"]
+
+
 # --- Lighting --------------------------------------------------------------------------
 LIGHT_DAY = "Daylight"
 LIGHT_DARK = "Darkness - lights lit"
