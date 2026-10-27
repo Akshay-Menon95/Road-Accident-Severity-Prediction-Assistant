@@ -16,10 +16,12 @@ An intelligent, machine-learning-powered road safety co-pilot and accident risk 
   - Real-time weather diagnostics via **Open-Meteo API** (zero API keys required).
   - Automatically translates precipitation, visibility, and weather codes into live road condition assessments (Dry, Wet, Foggy).
 - **🧠 Machine Learning Severity Classifier**
-  - Trained **Decision Tree Classifier** predicting accident severity (**Minor**, **Serious**, or **Fatal**).
-  - Evaluates critical risk factors: time of day, weather conditions, road surface conditions, vehicle type, and number of vehicles involved.
+  - Trained **Random Forest classifier** (with a prior-corrected decision threshold) predicting accident severity (**Minor**, **Serious**, or **Fatal**).
+  - Evaluates risk factors recorded in the crash data: time of day, weather, road surface, vehicle type, and number of vehicles involved. Live weather is translated into the exact labels the model was trained on (`label_maps.py`).
+  - See [Model performance](#-model-performance) for honest accuracy numbers and limitations.
 - **🛡️ Actionable Driver Advisories**
-  - Generates context-aware driving advisories, speed warnings, and hazard mitigation alerts.
+  - Context-aware advisories for speed (limit drops from 70 to 50 km/h in rain, fog or snow), slippery roads, low visibility, and blackspots you are in or approaching (5 km look-ahead).
+  - Vehicle speed drives these advisories only; the crash dataset has no speed field, so speed is not a model input.
 
 ---
 
@@ -29,17 +31,21 @@ An intelligent, machine-learning-powered road safety co-pilot and accident risk 
 Road-Accident-Severity-Prediction-Assistant/
 ├── app.py                      # Main Streamlit web dashboard & interactive co-pilot
 ├── navigation_engine.py        # Routing, geocoding, weather integration, & hazard scanner
+├── label_maps.py               # Shared vehicle / weather / road labels (training = live inputs)
+├── risk_model.py               # Loads artifacts and predicts severity from dashboard inputs
+├── ui_components.py            # Styling & HTML building blocks for the dashboard
 ├── blackspots.py               # Geocoded accident blackspots database
 ├── train.py                    # Model training, validation, & serialization pipeline
-├── fetch_kerala_real_data.py   # Historical weather & accident data ingestion script
-├── requirements.txt            # Project dependencies
-├── .gitignore                  # Git ignore rules for virtual environments & cache
+├── severity_model.py           # Prior-corrected classifier wrapper used for the severity decision
+├── tests/test_pipeline.py      # Pytest suite for mappings, model artifacts, hazards, advisories
+├── requirements.txt            # Project dependencies (requirements-dev.txt adds pytest)
 ├── data/
-│   └── kerala_accident_data.csv# Accident & transit dataset
+│   └── RTA_Dataset.csv         # Road Traffic Accident dataset (Addis Ababa, Ethiopia)
 └── models/
-    ├── decision_tree_model.joblib # Serialized Decision Tree model
+    ├── severity_model.joblib      # Serialized severity model (random forest + threshold)
     ├── feature_columns.joblib     # Feature schema metadata
-    └── label_encoders.joblib      # Categorical encoders
+    ├── label_encoders.joblib      # Categorical encoders
+    └── metrics.json               # Held-out evaluation written by train.py
 ```
 
 ---
@@ -85,16 +91,40 @@ Open your browser and navigate to `http://localhost:8501`.
 
 ## 🔬 Model Training & Data Pipeline
 
-Pre-trained models are already provided in the [`models/`](models/) directory. If you wish to retrain or update the model with new data:
+Pre-trained models are already provided in the [`models/`](models/) directory. If you wish to retrain (for example after upgrading scikit-learn, since the `.joblib` files are tied to the version that wrote them):
 
 ```bash
 python train.py
 ```
 
-To fetch real historical Kerala weather & accident transit data:
+`train.py` maps the raw dataset onto the shared labels in `label_maps.py` and makes an ~80/20 split **grouped by crash** (the file has one row per vehicle/casualty, so rows of one crash share a timestamp and weekday; a plain random split lets the model see a crash in training and be tested on it). It tunes the forest's leaf size and a class-prior correction (`severity_model.py`) by 5-fold crash-grouped cross-validation, choosing the highest accuracy within 0.01 macro-F1 of the best, and writes the held-out results to `models/metrics.json`.
+
+Run the tests with:
 ```bash
-python fetch_kerala_real_data.py
+pip install -r requirements-dev.txt
+pytest
 ```
+
+---
+
+## 📊 Model performance
+
+Evaluated on a crash-grouped, stratified held-out set of 2,274 rows from the RTA dataset (11,366 usable rows, ~2,700 distinct crashes). Both columns are measured on the same held-out crashes:
+
+| Metric | Previous model (decision tree, 5 features) | Current model (random forest, + lighting & driver age, accuracy-tuned) |
+|---|---|---|
+| Accuracy | 53.3% | **80.1%** |
+| Balanced accuracy | 47.2% | 39.1% |
+| Macro F1 | 0.338 | **0.392** |
+| Fatal / Serious / Minor recall | 55% / 29% / 57% | 0% / 27% / 90% |
+
+Please read these numbers carefully:
+
+- **This model is tuned for accuracy, and it no longer flags Fatal crashes.** 84% of crashes are "Minor", so always predicting "Minor" scores 84%. `train.py` picks the highest-accuracy setting whose macro-F1 stays within 0.01 of the best, which gives 80.1% accuracy and ~27% Serious recall, but **0% Fatal recall** on the held-out set (only ~29 fatal rows, so that figure is noisy but the direction is real). An earlier, safety-first setting reached 74.8% accuracy with 24% Fatal recall; lower `F1_TOLERANCE`/change the tuning rule in `train.py` to get that back.
+- **The signal is weak.** Hour, lighting, weather, road surface, vehicle type and vehicle count explain little about severity. Treat the output as a relative risk indicator, not a calibrated probability or a prediction for a specific trip.
+- **Why not more features?** Day of week, driver age and experience looked like big wins under a random split (~78% accuracy, macro-F1 0.47) but nearly all of that gain disappeared once crashes were grouped, i.e. it was the model recognising crashes it had already seen. Only lighting (derived from the hour in the dashboard) and driver age (a dashboard input) gave small gains that survived; the threshold-free signal (macro one-vs-rest AUC) is only ~0.61, which is why accuracy beyond ~80% would just mean predicting "Minor" almost every time.
+- **Different country.** The data comes from Addis Ababa, Ethiopia, while the navigation and blackspots cover India.
+- **Earlier versions reported ~90% accuracy** because vehicle speed was synthesised from the severity label itself (target leakage). That feature has been removed.
 
 ---
 

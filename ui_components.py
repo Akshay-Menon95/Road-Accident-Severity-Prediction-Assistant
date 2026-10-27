@@ -311,7 +311,7 @@ def hero(start, end, distance_km=None):
             <p>Route-level accident severity forecasting from historical crash records,
             live weather telemetry and a decision-tree classifier.</p>
             <div class="chips">
-                <span class="chip">🧠 Decision Tree model</span>
+                <span class="chip">🧠 Random Forest model</span>
                 <span class="chip">🌦️ Open-Meteo live weather</span>
                 <span class="chip">🛣️ OSRM routing</span>
                 <span class="chip">📍 Blackspot proximity scan</span>
@@ -376,7 +376,7 @@ def risk_card(severity, prob_by_class):
                     <circle cx="54" cy="54" r="{radius}" fill="none" stroke="{style['color']}" stroke-width="10"
                         stroke-linecap="round" stroke-dasharray="{dash:.1f} {circumference:.1f}"/>
                 </svg>
-                <div class="center"><div><div class="pct">{confidence * 100:.0f}%</div><div class="cap">confidence</div></div></div>
+                <div class="center"><div><div class="pct">{confidence * 100:.0f}%</div><div class="cap">model score</div></div></div>
             </div>
         </div>
         <div class="probs">{rows}</div>

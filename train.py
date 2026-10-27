@@ -1,98 +1,186 @@
 # train.py
-import os
+import json
+from pathlib import Path
+
 import joblib
-import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeClassifier
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (accuracy_score, balanced_accuracy_score, classification_report,
+                             confusion_matrix, f1_score)
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score
 
-os.makedirs("models", exist_ok=True)
-os.makedirs("data", exist_ok=True)
+from label_maps import map_vehicle
+from severity_model import PriorCorrectedClassifier
 
-data_path = "data/RTA_Dataset.csv"
-raw_url = "https://raw.githubusercontent.com/avikumart/Road-Traffic-Severity-Classification-Project/main/RTA%20Dataset.csv"
+ROOT = Path(__file__).resolve().parent
+DATA_PATH = ROOT / "data" / "RTA_Dataset.csv"
+MODEL_DIR = ROOT / "models"
+RAW_URL = "https://raw.githubusercontent.com/avikumart/Road-Traffic-Severity-Classification-Project/main/RTA%20Dataset.csv"
 
-# 1. Self-Healing Data Loader
-need_download = True
-if os.path.exists(data_path):
-    try:
-        df = pd.read_csv(data_path)
-        if len(df) > 1000:
-            need_download = False
-    except Exception: pass
+SEED = 42
+# Only features that exist in the dataset AND can be known at prediction time.
+# Vehicle speed is deliberately absent: the dataset has no speed column.
+FEATURES = ['Time_Hour', 'Weather_Condition', 'Road_Condition', 'Vehicle_Type',
+            'Number_of_Vehicles', 'Light_Condition', 'Driver_Age']
+CATEGORICAL = ['Weather_Condition', 'Road_Condition', 'Vehicle_Type', 'Light_Condition', 'Driver_Age']
+SEVERITY_MAP = {"Slight Injury": "Minor", "Serious Injury": "Serious", "Fatal injury": "Fatal"}
 
-if need_download:
-    print("📥 Downloading raw CSV...")
-    df = pd.read_csv(raw_url)
+FOREST_TREES = 300
+LEAF_GRID = [25, 50, 100]
+EXPONENT_GRID = np.round(np.arange(0.0, 1.21, 0.1), 1)
+
+
+def load_raw(data_path=DATA_PATH):
+    """Reads the RTA dataset, downloading it first if the local copy is missing or truncated."""
+    if data_path.exists():
+        try:
+            df = pd.read_csv(data_path)
+            if len(df) > 1000:
+                return df
+        except Exception:
+            pass
+    print("Downloading raw CSV...")
+    df = pd.read_csv(RAW_URL)
+    data_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(data_path, index=False)
+    return df
 
-# 2. Clean Columns
-df.rename(columns={
-    'Weather_conditions': 'Weather_Condition',
-    'Road_surface_conditions': 'Road_Condition',
-    'Number_of_vehicles_involved': 'Number_of_Vehicles'
-}, inplace=True)
 
-df['Time_Hour'] = df['Time'].astype(str).str.split(':').str[0]
-df['Time_Hour'] = pd.to_numeric(df['Time_Hour'], errors='coerce').fillna(12).astype(int)
+def prepare_dataset(raw):
+    """Renames, maps and filters the raw RTA table down to FEATURES + Severity + Crash_Group."""
+    df = raw.rename(columns={
+        'Weather_conditions': 'Weather_Condition',
+        'Road_surface_conditions': 'Road_Condition',
+        'Number_of_vehicles_involved': 'Number_of_Vehicles',
+        'Light_conditions': 'Light_Condition',
+        'Age_band_of_driver': 'Driver_Age',
+    })
+    df['Time_Hour'] = pd.to_numeric(df['Time'].astype(str).str.split(':').str[0], errors='coerce')
+    df['Severity'] = df['Accident_severity'].map(SEVERITY_MAP)
+    df['Vehicle_Type'] = df['Type_of_vehicle'].map(map_vehicle)
+    # The file has one row per vehicle/casualty, so rows of one crash share a timestamp
+    # and weekday. Rows with the same group must never straddle the train/test split.
+    df['Driver_Age'] = df['Driver_Age'].fillna('Unknown').astype(str).str.strip()
+    df['Crash_Group'] = df['Time'].astype(str) + '|' + df['Day_of_week'].astype(str)
 
-df['Severity'] = df['Accident_severity'].map({"Slight Injury": "Minor", "Serious Injury": "Serious", "Fatal injury": "Fatal"})
+    before = len(df)
+    df = df.dropna(subset=FEATURES + ['Severity'])
+    df = df[df['Time_Hour'].between(0, 23)].copy()
+    df['Time_Hour'] = df['Time_Hour'].astype(int)
+    print(f"Rows kept: {len(df)} of {before} (dropped rows missing vehicle type, hour or severity)")
+    return df
 
-# 3. Map to Requested Vehicle Types
-def map_vehicles(v):
-    v = str(v).lower()
-    if 'motorcycle' in v: return 'Motorcycle'
-    if 'bajaj' in v or 'bicycle' in v: return 'Scooter'
-    if '> 45' in v: return 'Public transport (>45 seats)'
-    if '13?45' in v or 'station' in v: return 'Public transport (20-45 seats)'
-    if 'public (12' in v or 'taxi' in v or 'automobile' in v: return 'Public transport (10-20 seats)'
-    if '11?16' in v or 'pick up' in v: return 'Lorry (Short wheelbase)'
-    if '41?100' in v or 'lorry' in v: return 'Lorry (Long wheelbase)'
-    return 'Motorcycle' # default fallback
 
-df['Vehicle_Type'] = df['Type_of_vehicle'].apply(map_vehicles)
+def grouped_folds(y, groups, n_splits=5):
+    """Stratified folds in which every crash group lands entirely in one fold."""
+    return list(StratifiedGroupKFold(n_splits, shuffle=True, random_state=SEED).split(y, y, groups))
 
-# 4. Inject Realistic Speed Physics based on Severity & Time
-# This ensures the model learns that 150 km/h = Fatal
-np.random.seed(42)
-speeds = []
-for sev, hour in zip(df['Severity'], df['Time_Hour']):
-    base_speed = 40
-    if sev == 'Fatal': base_speed = np.random.normal(100, 20)
-    elif sev == 'Serious': base_speed = np.random.normal(70, 15)
-    else: base_speed = np.random.normal(40, 15)
-    
-    if hour >= 22 or hour <= 4: base_speed += 15 # Faster at night
-    speeds.append(base_speed)
 
-df['Vehicle_Speed'] = np.clip(speeds, 10, 160).astype(int)
+def make_forest(leaf):
+    return RandomForestClassifier(FOREST_TREES, min_samples_leaf=leaf, n_jobs=-1, random_state=SEED)
 
-# 5. Train Model (Now explicitly including Vehicle_Speed)
-features = ['Vehicle_Speed', 'Time_Hour', 'Weather_Condition', 'Road_Condition', 'Vehicle_Type', 'Number_of_Vehicles']
-df.dropna(subset=features + ['Severity'], inplace=True)
 
-X = df[features].copy()
-y = df['Severity'].copy()
+def out_of_fold_probabilities(X, y, groups, leaf):
+    """Class probabilities for every row from a model that never saw that row's crash."""
+    proba = np.zeros((len(y), len(np.unique(y))))
+    for train_idx, val_idx in grouped_folds(y, groups):
+        forest = make_forest(leaf).fit(X.iloc[train_idx], y[train_idx])
+        proba[val_idx] = forest.predict_proba(X.iloc[val_idx])
+    return proba
 
-encoders = {}
-for col in ['Weather_Condition', 'Road_Condition', 'Vehicle_Type']:
-    le = LabelEncoder()
-    X[col] = le.fit_transform(X[col].astype(str))
-    encoders[col] = le
 
-target_le = LabelEncoder()
-y_encoded = target_le.fit_transform(y)
-encoders['Severity'] = target_le
+F1_TOLERANCE = 0.01
 
-X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
 
-clf = DecisionTreeClassifier(max_depth=7, min_samples_split=5, random_state=42)
-clf.fit(X_train, y_train)
+def tune(X, y, groups, priors):
+    """Picks forest leaf size and prior-correction exponent by crash-grouped CV.
 
-print(f"🎯 Model trained WITH Speed Physics. Accuracy: {accuracy_score(y_test, clf.predict(X_test)) * 100:.2f}%")
+    Chooses the setting with the highest accuracy among those whose macro-F1 is within
+    F1_TOLERANCE of the best, so accuracy is raised without collapsing into "always Minor".
+    """
+    candidates = []
+    for leaf in LEAF_GRID:
+        proba = out_of_fold_probabilities(X, y, groups, leaf)
+        for exponent in EXPONENT_GRID:
+            pred = (proba / priors ** exponent).argmax(axis=1)
+            candidates.append({'leaf': leaf, 'exponent': float(exponent),
+                               'accuracy': float(accuracy_score(y, pred)),
+                               'macro_f1': float(f1_score(y, pred, average='macro'))})
+    floor = max(c['macro_f1'] for c in candidates) - F1_TOLERANCE
+    return max((c for c in candidates if c['macro_f1'] >= floor), key=lambda c: c['accuracy'])
 
-joblib.dump(clf, "models/decision_tree_model.joblib")
-joblib.dump(encoders, "models/label_encoders.joblib")
-joblib.dump(features, "models/feature_columns.joblib")
+
+def evaluate(clf, X_test, y_test, labels):
+    pred = clf.predict(X_test)
+    majority = float(np.max(np.bincount(y_test)) / len(y_test))
+    return {
+        "accuracy": float(accuracy_score(y_test, pred)),
+        "majority_class_baseline_accuracy": majority,
+        "balanced_accuracy": float(balanced_accuracy_score(y_test, pred)),
+        "macro_f1": float(f1_score(y_test, pred, average='macro')),
+        "labels": list(labels),
+        "confusion_matrix": confusion_matrix(y_test, pred).tolist(),
+        "per_class": classification_report(y_test, pred, target_names=labels,
+                                           output_dict=True, zero_division=0),
+    }
+
+
+def main():
+    MODEL_DIR.mkdir(exist_ok=True)
+    df = prepare_dataset(load_raw())
+
+    X = df[FEATURES].copy()
+    encoders = {}
+    for col in CATEGORICAL:
+        encoders[col] = LabelEncoder().fit(X[col].astype(str))
+        X[col] = encoders[col].transform(X[col].astype(str))
+    encoders['Severity'] = LabelEncoder().fit(df['Severity'])
+    y = encoders['Severity'].transform(df['Severity'])
+    labels = list(encoders['Severity'].classes_)
+    groups = df['Crash_Group'].to_numpy()
+
+    # Hold out one grouped fold (~20% of crashes) as the final test set.
+    train_idx, test_idx = grouped_folds(y, groups)[0]
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+    assert not set(groups[train_idx]) & set(groups[test_idx]), "crash rows leaked across the split"
+
+    # Plain accuracy is won by always predicting "Minor" (~84%), so the decision point is
+    # tuned on out-of-fold predictions (highest accuracy within a small macro-F1 margin of the best).
+    priors = np.bincount(y_train) / len(y_train)
+    best = tune(X_train, y_train, groups[train_idx], priors)
+    forest = make_forest(best['leaf']).fit(X_train, y_train)
+    clf = PriorCorrectedClassifier(forest, priors, best['exponent'])
+
+    metrics = evaluate(clf, X_test, y_test, labels)
+    metrics.update({
+        "rows": int(len(df)),
+        "crashes": int(df['Crash_Group'].nunique()),
+        "train_rows": int(len(X_train)),
+        "test_rows": int(len(X_test)),
+        "split": "crash-grouped (no crash appears in both train and test)",
+        "best_params": {"min_samples_leaf": best['leaf'], "prior_exponent": best['exponent']},
+        "cv_accuracy_on_train": best['accuracy'],
+        "cv_macro_f1_on_train": best['macro_f1'],
+    })
+
+    print(f"Best params: leaf={best['leaf']}, prior exponent={best['exponent']}")
+    print(f"Held-out test set ({len(X_test)} rows, crash-grouped, stratified):")
+    print(f"  accuracy          {metrics['accuracy'] * 100:.2f}%  "
+          f"(always predicting the majority class: {metrics['majority_class_baseline_accuracy'] * 100:.2f}%)")
+    print(f"  balanced accuracy {metrics['balanced_accuracy'] * 100:.2f}%")
+    print(f"  macro F1          {metrics['macro_f1']:.3f}")
+    print(f"  labels {labels}\n{np.array(metrics['confusion_matrix'])}")
+    print("Note: the dataset has weak signal and outputs are prior-corrected, so treat them as "
+          "relative risk, not calibrated probabilities.")
+
+    joblib.dump(clf, MODEL_DIR / "severity_model.joblib")
+    joblib.dump(encoders, MODEL_DIR / "label_encoders.joblib")
+    joblib.dump(FEATURES, MODEL_DIR / "feature_columns.joblib")
+    (MODEL_DIR / "metrics.json").write_text(json.dumps(metrics, indent=2))
+
+
+if __name__ == "__main__":
+    main()
