@@ -376,7 +376,7 @@ def risk_card(severity, prob_by_class):
                     <circle cx="54" cy="54" r="{radius}" fill="none" stroke="{style['color']}" stroke-width="10"
                         stroke-linecap="round" stroke-dasharray="{dash:.1f} {circumference:.1f}"/>
                 </svg>
-                <div class="center"><div><div class="pct">{confidence * 100:.0f}%</div><div class="cap">confidence</div></div></div>
+                <div class="center"><div><div class="pct">{confidence * 100:.0f}%</div><div class="cap">model score</div></div></div>
             </div>
         </div>
         <div class="probs">{rows}</div>

@@ -49,3 +49,6 @@ venv.bak/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Test caches
+.pytest_cache/
