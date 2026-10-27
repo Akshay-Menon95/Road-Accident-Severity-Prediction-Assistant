@@ -103,6 +103,16 @@ def classify_weather(weather_code, precipitation_mm, wind_kmh):
     return WEATHER_NORMAL, ROAD_DRY
 
 
+# --- Lighting --------------------------------------------------------------------------
+LIGHT_DAY = "Daylight"
+LIGHT_DARK = "Darkness - lights lit"
+
+
+def light_for_hour(hour):
+    """Lighting label for an hour of day; in the dataset 06:00-17:59 is almost all daylight."""
+    return LIGHT_DAY if 6 <= hour < 18 else LIGHT_DARK
+
+
 # Conditions that call for a lower speed limit in advisories.
 ADVERSE_WEATHER = {WEATHER_RAIN, WEATHER_RAIN_WIND, WEATHER_FOG, WEATHER_SNOW}
 ADVERSE_ROAD = {ROAD_WET, ROAD_SNOW, "Flood over 3cm. deep"}

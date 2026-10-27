@@ -12,7 +12,7 @@ def load_artifacts(model_dir=MODEL_DIR):
     # joblib unpickles, so only load artifacts produced by this repo's own train.py.
     model_dir = Path(model_dir)
     return (
-        joblib.load(model_dir / "decision_tree_model.joblib"),
+        joblib.load(model_dir / "severity_model.joblib"),
         joblib.load(model_dir / "label_encoders.joblib"),
         joblib.load(model_dir / "feature_columns.joblib"),
     )

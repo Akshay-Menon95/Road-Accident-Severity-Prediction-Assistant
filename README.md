@@ -16,7 +16,7 @@ An intelligent, machine-learning-powered road safety co-pilot and accident risk 
   - Real-time weather diagnostics via **Open-Meteo API** (zero API keys required).
   - Automatically translates precipitation, visibility, and weather codes into live road condition assessments (Dry, Wet, Foggy).
 - **🧠 Machine Learning Severity Classifier**
-  - Trained **Decision Tree Classifier** predicting accident severity (**Minor**, **Serious**, or **Fatal**).
+  - Trained **Random Forest classifier** (with a prior-corrected decision threshold) predicting accident severity (**Minor**, **Serious**, or **Fatal**).
   - Evaluates risk factors recorded in the crash data: time of day, weather, road surface, vehicle type, and number of vehicles involved. Live weather is translated into the exact labels the model was trained on (`label_maps.py`).
   - See [Model performance](#-model-performance) for honest accuracy numbers and limitations.
 - **🛡️ Actionable Driver Advisories**
@@ -36,12 +36,13 @@ Road-Accident-Severity-Prediction-Assistant/
 ├── ui_components.py            # Styling & HTML building blocks for the dashboard
 ├── blackspots.py               # Geocoded accident blackspots database
 ├── train.py                    # Model training, validation, & serialization pipeline
+├── severity_model.py           # Prior-corrected classifier wrapper used for the severity decision
 ├── tests/test_pipeline.py      # Pytest suite for mappings, model artifacts, hazards, advisories
 ├── requirements.txt            # Project dependencies (requirements-dev.txt adds pytest)
 ├── data/
 │   └── RTA_Dataset.csv         # Road Traffic Accident dataset (Addis Ababa, Ethiopia)
 └── models/
-    ├── decision_tree_model.joblib # Serialized Decision Tree model
+    ├── severity_model.joblib      # Serialized severity model (random forest + threshold)
     ├── feature_columns.joblib     # Feature schema metadata
     ├── label_encoders.joblib      # Categorical encoders
     └── metrics.json               # Held-out evaluation written by train.py
@@ -96,7 +97,7 @@ Pre-trained models are already provided in the [`models/`](models/) directory. I
 python train.py
 ```
 
-`train.py` maps the raw dataset onto the shared labels in `label_maps.py`, makes a stratified 80/20 split, tunes the tree depth and leaf size by 5-fold cross-validation on macro-F1 (with balanced class weights), and writes the held-out results to `models/metrics.json`.
+`train.py` maps the raw dataset onto the shared labels in `label_maps.py` and makes an ~80/20 split **grouped by crash** (the file has one row per vehicle/casualty, so rows of one crash share a timestamp and weekday; a plain random split lets the model see a crash in training and be tested on it). It tunes the forest's leaf size and a class-prior correction (`severity_model.py`) by 5-fold crash-grouped cross-validation on the mean of macro-F1 and balanced accuracy, and writes the held-out results to `models/metrics.json`.
 
 Run the tests with:
 ```bash
@@ -108,19 +109,20 @@ pytest
 
 ## 📊 Model performance
 
-Evaluated on a stratified held-out set of 2,274 crashes from the RTA dataset (11,366 usable rows):
+Evaluated on a crash-grouped, stratified held-out set of 2,274 rows from the RTA dataset (11,366 usable rows, ~2,700 distinct crashes). Both columns are measured on the same held-out crashes:
 
-| Metric | Value |
-|---|---|
-| Accuracy | 44.6% |
-| Balanced accuracy | 45.9% |
-| Macro F1 | 0.305 |
-| Fatal recall / Serious recall / Minor recall | 62% / 29% / 47% |
+| Metric | Previous model (decision tree, 5 features) | Current model (random forest, + lighting, prior-corrected) |
+|---|---|---|
+| Accuracy | 53.3% | **74.8%** |
+| Balanced accuracy | 47.2% | 46.2% |
+| Macro F1 | 0.338 | **0.418** |
+| Fatal / Serious / Minor recall | 55% / 29% / 57% | 24% / 32% / 83% |
 
 Please read these numbers carefully:
 
-- **Accuracy is deliberately low.** 84% of crashes are "Minor", so always predicting "Minor" scores 84% accuracy but is useless for road safety. The model is class-weighted to flag Serious and Fatal crashes, which costs raw accuracy and produces many false alarms (Fatal precision is 2%, because only about 1% of crashes are fatal).
-- **The signal is weak.** Hour, weather, road surface, vehicle type and vehicle count explain little about severity. Treat the output as a relative risk indicator, not a calibrated probability or a prediction for a specific trip.
+- **Accuracy is a trade-off, not a goal.** 84% of crashes are "Minor", so always predicting "Minor" scores 84% accuracy but is useless for road safety. The model's threshold is tuned so it still flags Serious and Fatal crashes; moving it towards "Minor" raises accuracy (up to ~83%) but Fatal recall falls towards zero. The current setting roughly keeps balanced accuracy while lifting raw accuracy by ~21 points. Fatal precision is only 6% because about 1% of crashes are fatal, and only ~29 fatal rows are in the test set, so Fatal figures are noisy.
+- **The signal is weak.** Hour, lighting, weather, road surface, vehicle type and vehicle count explain little about severity. Treat the output as a relative risk indicator, not a calibrated probability or a prediction for a specific trip.
+- **Why not more features?** Day of week, driver age and experience looked like big wins under a random split (~78% accuracy, macro-F1 0.47) but nearly all of that gain disappeared once crashes were grouped, i.e. it was the model recognising crashes it had already seen. Only lighting (derived from the hour in the dashboard) gave a gain that survived.
 - **Different country.** The data comes from Addis Ababa, Ethiopia, while the navigation and blackspots cover India.
 - **Earlier versions reported ~90% accuracy** because vehicle speed was synthesised from the severity label itself (target leakage). That feature has been removed.
 

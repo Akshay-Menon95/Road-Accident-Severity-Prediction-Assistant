@@ -75,6 +75,8 @@ def test_live_labels_are_known_to_the_encoders(artifacts):
         w, r = label_maps.classify_weather(code, precip, wind)
         assert w in weather and r in road
     assert set(label_maps.VEHICLE_GROUPS) <= set(encoders["Vehicle_Type"].classes_)
+    light = set(encoders["Light_Condition"].classes_)
+    assert {label_maps.light_for_hour(h) for h in range(24)} <= light
 
 
 def test_predict_severity_for_every_vehicle(artifacts):
@@ -82,7 +84,8 @@ def test_predict_severity_for_every_vehicle(artifacts):
     for vehicle in label_maps.VEHICLE_GROUPS:
         severity, probs = risk_model.predict_severity(model, encoders, features, {
             "Time_Hour": 23, "Number_of_Vehicles": 2, "Weather_Condition": "Raining",
-            "Road_Condition": "Wet or damp", "Vehicle_Type": vehicle})
+            "Road_Condition": "Wet or damp", "Vehicle_Type": vehicle,
+            "Light_Condition": "Darkness - lights lit"})
         assert severity in {"Minor", "Serious", "Fatal"}
         assert sum(probs.values()) == pytest.approx(1.0)
 
@@ -90,12 +93,13 @@ def test_predict_severity_for_every_vehicle(artifacts):
 def test_inputs_actually_reach_the_model(artifacts):
     model, encoders, features = artifacts
     base = {"Time_Hour": 14, "Number_of_Vehicles": 2, "Weather_Condition": "Normal",
-            "Road_Condition": "Dry", "Vehicle_Type": "Car / Taxi"}
+            "Road_Condition": "Dry", "Vehicle_Type": "Car / Taxi",
+            "Light_Condition": "Daylight"}
     _, p0 = risk_model.predict_severity(model, encoders, features, base)
     changed = [
         {**base, "Road_Condition": "Wet or damp"}, {**base, "Weather_Condition": "Raining"},
         {**base, "Vehicle_Type": "Motorcycle / Scooter"}, {**base, "Number_of_Vehicles": 5},
-        {**base, "Time_Hour": 2},
+        {**base, "Time_Hour": 2}, {**base, "Light_Condition": "Darkness - lights lit"},
     ]
     assert any(risk_model.predict_severity(model, encoders, features, c)[1] != p0 for c in changed)
 
@@ -103,11 +107,48 @@ def test_inputs_actually_reach_the_model(artifacts):
 def test_unknown_label_and_missing_input_are_rejected(artifacts):
     model, encoders, features = artifacts
     base = {"Time_Hour": 14, "Number_of_Vehicles": 2, "Weather_Condition": "Normal",
-            "Road_Condition": "Dry", "Vehicle_Type": "Car / Taxi"}
+            "Road_Condition": "Dry", "Vehicle_Type": "Car / Taxi",
+            "Light_Condition": "Daylight"}
     with pytest.raises(ValueError):
         risk_model.predict_severity(model, encoders, features, {**base, "Weather_Condition": "Rainy"})
     with pytest.raises(KeyError):
         risk_model.predict_severity(model, encoders, features, {k: v for k, v in base.items() if k != "Time_Hour"})
+
+
+def test_light_for_hour():
+    assert label_maps.light_for_hour(12) == "Daylight"
+    assert label_maps.light_for_hour(2) == label_maps.light_for_hour(21) == "Darkness - lights lit"
+
+
+def test_grouped_split_keeps_each_crash_on_one_side():
+    df = train.prepare_dataset(RAW)
+    y = df["Severity"].astype("category").cat.codes.to_numpy()
+    groups = df["Crash_Group"].to_numpy()
+    for train_idx, test_idx in train.grouped_folds(y, groups):
+        assert not set(groups[train_idx]) & set(groups[test_idx])
+
+
+def test_prior_correction_flags_rare_classes_more_often():
+    import numpy as np
+    from severity_model import PriorCorrectedClassifier
+
+    class Fixed:
+        classes_ = np.array(["Fatal", "Minor", "Serious"])
+        def predict_proba(self, X):
+            return np.array([[0.05, 0.80, 0.15]])
+
+    priors = [0.01, 0.85, 0.14]
+    assert PriorCorrectedClassifier(Fixed(), priors, 0.0).predict(None)[0] == "Minor"
+    corrected = PriorCorrectedClassifier(Fixed(), priors, 1.0)
+    assert corrected.predict(None)[0] == "Fatal"
+    assert corrected.predict_proba(None).sum() == pytest.approx(1.0)
+
+
+def test_held_out_metrics_beat_the_old_pipeline():
+    import json
+    metrics = json.loads((ROOT / "models" / "metrics.json").read_text())
+    assert "crash-grouped" in metrics["split"]
+    assert metrics["accuracy"] > 0.60 and metrics["macro_f1"] > 0.36
 
 
 # --- navigation engine -----------------------------------------------------------------

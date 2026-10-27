@@ -311,7 +311,7 @@ def hero(start, end, distance_km=None):
             <p>Route-level accident severity forecasting from historical crash records,
             live weather telemetry and a decision-tree classifier.</p>
             <div class="chips">
-                <span class="chip">🧠 Decision Tree model</span>
+                <span class="chip">🧠 Random Forest model</span>
                 <span class="chip">🌦️ Open-Meteo live weather</span>
                 <span class="chip">🛣️ OSRM routing</span>
                 <span class="chip">📍 Blackspot proximity scan</span>

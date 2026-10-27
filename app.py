@@ -5,7 +5,7 @@ from streamlit_folium import st_folium
 import numpy as np
 from navigation_engine import (get_driving_route, get_live_weather, scan_hazards, scan_route_hazards,
                                route_cumulative_km, generate_advisory, geocode_location, reverse_geocode)
-from label_maps import VEHICLE_GROUPS
+from label_maps import VEHICLE_GROUPS, light_for_hour
 from risk_model import load_artifacts, predict_severity
 import ui_components as ui
 
@@ -156,6 +156,7 @@ try:
         "Weather_Condition": weather["Weather_Condition"],
         "Road_Condition": weather["Road_Condition"],
         "Vehicle_Type": vehicle_type,
+        "Light_Condition": light_for_hour(time_hour),
     })
 except (KeyError, ValueError) as e:
     html(ui.error_state("Model input mismatch", str(e)))
