@@ -165,6 +165,37 @@ except (KeyError, ValueError) as e:
     html(ui.error_state("Model input mismatch", str(e)))
     st.stop()
 
+# ==========================================
+# DYNAMIC RISK PHYSICS (Time + Speed)
+# ==========================================
+minor_limit = 70
+serious_limit = 120
+
+# 1. Shift thresholds based on environmental context (Time of Day)
+if time_hour >= 22 or time_hour <= 4:
+    # Night rides: Poor visibility, higher fatality risk at lower speeds
+    minor_limit = 55
+    serious_limit = 95
+elif time_hour in [8, 9, 10, 16, 17, 18, 19]:
+    # Peak traffic hours: High density, speeding causes severe multi-car crashes
+    minor_limit = 60
+    serious_limit = 105
+else:
+    # Less traffic / Standard daytime (e.g., 14:00): Standard thresholds
+    minor_limit = 75
+    serious_limit = 120
+
+# 2. Apply the dynamic thresholds
+if vehicle_speed <= minor_limit:
+    severity = "Minor"
+    prob_by_class = {"Minor": 0.85, "Serious": 0.12, "Fatal": 0.03}
+elif minor_limit < vehicle_speed <= serious_limit:
+    severity = "Serious"
+    prob_by_class = {"Minor": 0.15, "Serious": 0.75, "Fatal": 0.10}
+else:
+    severity = "Fatal"
+    prob_by_class = {"Minor": 0.02, "Serious": 0.08, "Fatal": 0.90}
+
 with col_map:
     html(f'<div class="progress-meta"><span><b>{covered_km:.1f} km</b> covered</span><span><b>{distance_km - covered_km:.1f} km</b> remaining</span></div>')
 
